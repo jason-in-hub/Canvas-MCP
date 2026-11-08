@@ -115,18 +115,17 @@ async def _ms_headless_drive(page, username: str, password: str) -> None:
     """Drive Microsoft's login page. Selectors are Entra ID's long-stable ids."""
     await page.wait_for_selector('input[name="loginfmt"]', timeout=60_000)
     await page.fill('input[name="loginfmt"]', username)
-    await page.click('input[type="submit"]')
+    await page.click('input[type="submit"]:visible')
 
     await page.wait_for_selector('input[name="passwd"]:visible, #usernameError', timeout=60_000)
     if await page.locator("#usernameError").count():
         raise RuntimeError("Microsoft rejected the username.")
     await page.fill('input[name="passwd"]', password)
-    await page.click('input[type="submit"]')
-    # Clear the field in the DOM so it isn't kept in page memory longer than needed.
-    try:
-        await page.fill('input[name="passwd"]', "")
-    except Exception:
-        pass
+    await page.click('input[type="submit"]:visible')
+    # Do NOT clear the field afterwards: Microsoft's page reads it asynchronously
+    # (an early clear can post an empty password), and once the page has moved on
+    # to MFA the field is gone, so fill() would stall 30 s while the MFA number
+    # is on screen. The incognito context is destroyed right after login anyway.
 
 
 async def _ms_headless_followups(page, base_url: str, deadline: float) -> None:
@@ -148,7 +147,7 @@ async def _ms_headless_followups(page, base_url: str, deadline: float) -> None:
             if await otc.count() and await otc.is_visible():
                 code = await asyncio.to_thread(getpass.getpass, "  One-time code (SMS/Authenticator): ")
                 await otc.fill(code.strip())
-                await page.click('input[type="submit"]')
+                await page.click('input[type="submit"]:visible')
                 del code
             # "Stay signed in?" -> No (don't create long-lived MS cookies)
             kmsi = page.locator("#KmsiCheckboxField, #idBtn_Back")

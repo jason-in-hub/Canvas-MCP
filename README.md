@@ -95,7 +95,21 @@ Residual risks you should know about:
 ## Tests
 
 ```bash
-pip install -e '.[dev]' && pytest -q
+pip install -e '.[dev]' && playwright install chromium
+xvfb-run -a pytest -q        # headful login tests need a display; without one they skip
 ```
 
-The tests use a mock Canvas. They cover pagination, off-host credential stripping, expiry detection, encryption and permissions, redaction, end-to-end MCP tool calls, and the check that no tool takes credentials.
+What the tests cover:
+
+- **Mock Canvas API** (httpx): pagination, credentials stripped on off-host redirects, expiry detection, encryption and file permissions, redaction, end-to-end MCP tool calls, and the check that no tool takes credentials.
+- **Extraction**: generated PDF, PPTX (titles, body, tables, speaker notes), IPYNB, Canvas-style HTML, and `read_file` paging that reassembles the text exactly.
+- **Real Playwright login against a fake Canvas → CAS → Microsoft chain** (two hostnames, so cookie scoping is real):
+  - Default mode keeps only the Canvas cookies, and they then authenticate the API.
+  - Microsoft cookies are dropped.
+  - HKUST's token refusal falls back to cookies, and the CSRF header is checked.
+  - Login times out cleanly.
+  - Headless mode refuses to type a password on a non-Microsoft host.
+  - Headless MFA number-match and the "Stay signed in? → No" screen work.
+  - A wrong password is reported without echoing it.
+
+Not covered: the real HKUST/Microsoft pages. Run `canvas-mcp login` once to confirm them.

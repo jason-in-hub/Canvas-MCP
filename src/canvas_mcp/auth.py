@@ -157,6 +157,36 @@ async def _ms_headless_followups(page, base_url: str, deadline: float) -> None:
     raise TimeoutError("Timed out waiting for login to complete.")
 
 
+BROWSER_MISSING_HINT = (
+    "No browser available for login. Install Playwright's Chromium in the SAME environment "
+    "as canvas-mcp:  uv run playwright install chromium   (or, inside an activated venv: "
+    "python -m playwright install chromium). Alternatively install Google Chrome or Microsoft Edge."
+)
+
+
+async def _launch_browser(pw, headless: bool):
+    """Playwright's bundled Chromium first; fall back to an installed Chrome / Edge.
+
+    The bundled browser is a separate download (`playwright install chromium`)
+    that is easy to skip, or to run in a different environment.
+    """
+    attempts = [None, "chrome", "msedge"]
+    last: Exception | None = None
+    for channel in attempts:
+        try:
+            if channel is None:
+                return await pw.chromium.launch(headless=headless)
+            browser = await pw.chromium.launch(headless=headless, channel=channel)
+            _eprint(f"(Playwright's Chromium not installed; using your installed {channel}.)")
+            return browser
+        except Exception as exc:  # executable missing for this channel -> try next
+            msg = str(exc)
+            if "Executable doesn't exist" not in msg and "is not found" not in msg and "not installed" not in msg.lower():
+                raise
+            last = exc
+    raise RuntimeError(BROWSER_MISSING_HINT) from last
+
+
 async def browser_login(settings: Settings, *, headless: bool = False, mint_token_days: int | None = None) -> dict[str, Any]:
     try:
         from playwright.async_api import async_playwright
@@ -170,7 +200,7 @@ async def browser_login(settings: Settings, *, headless: bool = False, mint_toke
 
     async with async_playwright() as pw:
         # Ephemeral (incognito) context: nothing about the MS login persists on disk.
-        browser = await pw.chromium.launch(headless=headless)
+        browser = await _launch_browser(pw, headless)
         context = await browser.new_context()
         page = await context.new_page()
         try:

@@ -239,3 +239,50 @@ async def test_headless_wrong_password_reports_without_echoing_it(world, setting
     with pytest.raises(RuntimeError, match="rejected the password") as ei:
         await auth.browser_login(settings, headless=True)
     assert "wrong-Pa55word" not in str(ei.value) and "wrong-Pa55word" not in capsys.readouterr().err
+
+
+# ------------------------------------------------------------- browser discovery
+class _FakeChromium:
+    def __init__(self, available: set):
+        self.available, self.calls = available, []
+
+    async def launch(self, headless=True, channel=None):
+        self.calls.append(channel)
+        if channel not in self.available:
+            name = channel or "chromium-1248"
+            raise Exception(f"BrowserType.launch: Executable doesn't exist at /x/{name}\nLooks like Playwright was just installed")
+        return f"browser:{channel}"
+
+
+class _FakePW:
+    def __init__(self, available):
+        self.chromium = _FakeChromium(available)
+
+
+async def test_launch_falls_back_to_installed_chrome(capsys):
+    pw = _FakePW({"chrome"})
+    assert await auth._launch_browser(pw, headless=False) == "browser:chrome"
+    assert pw.chromium.calls == [None, "chrome"]
+    assert "using your installed chrome" in capsys.readouterr().err
+
+
+async def test_launch_prefers_bundled_chromium():
+    pw = _FakePW({None, "chrome"})
+    assert await auth._launch_browser(pw, headless=True) == "browser:None"
+    assert pw.chromium.calls == [None]
+
+
+async def test_launch_no_browser_gives_actionable_hint():
+    pw = _FakePW(set())
+    with pytest.raises(RuntimeError, match="uv run playwright install chromium"):
+        await auth._launch_browser(pw, headless=False)
+
+
+async def test_launch_other_errors_are_not_swallowed():
+    class Boom(_FakeChromium):
+        async def launch(self, headless=True, channel=None):
+            raise Exception("Target page, context or browser has been closed")
+
+    pw = _FakePW(set()); pw.chromium = Boom(set())
+    with pytest.raises(Exception, match="has been closed"):
+        await auth._launch_browser(pw, headless=False)

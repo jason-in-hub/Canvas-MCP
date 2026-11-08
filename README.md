@@ -23,6 +23,8 @@ git clone <this repo> && cd Canvas-MCP
 python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -e .
 playwright install chromium
+# optional, for whole-slide images in view_page:
+#   macOS: brew install --cask libreoffice   Windows: winget install TheDocumentFoundation.LibreOffice
 ```
 
 ## Log in (in a terminal, not in the chat)
@@ -62,11 +64,28 @@ Claude Code: `claude mcp add hkust-canvas -- /ABS/PATH/.venv/bin/canvas-mcp serv
 | `open_login_window` | Opens Microsoft's sign-in page in a browser **for you** to type in; credentials never enter the chat |
 | `list_courses`, `get_course` | Courses, syllabus, front page |
 | `list_modules` | Module structure (usually where lecture notes live) |
-| `list_files`, `read_file`, `download_file` | Files → extracted text (paged with `offset`), or saved to `~/.canvas-mcp/downloads` |
+| `list_files`, `read_file` | Files → Markdown with `--- page N ---` / `--- slide N ---` markers, paged with `offset`. Also returns `visual_pages`, the scanned or diagram-heavy pages the AI should look at |
+| `view_page` | Image of one PDF page or slide (≤1400 px, ≈1.5k tokens), for diagrams, charts, typeset formulas and scans |
+| `download_file` | Save to `~/.canvas-mcp/downloads` |
 | `list_pages`, `get_page` | Wiki pages |
 | `list_announcements`, `list_discussions` | Course communications |
 | `list_assignments`, `get_assignment`, `upcoming` | Coursework and deadlines |
 | `search_course` | Title search across files, pages and module items |
+
+## How files are read
+
+| Format | Engine | Why |
+|---|---|---|
+| PDF | [pymupdf4llm](https://github.com/pymupdf/pymupdf4llm) | Markdown tables and headings come out right. Firecrawl's anydoc 0.2.4 was benchmarked here and **merged adjacent table rows**, which put Gamma's formula on Delta's row without any error. |
+| PPT/PPTX, DOC/DOCX, XLS/XLSX, ODF, RTF, EPUB, CSV | [Firecrawl anydoc](https://github.com/firecrawl/anydoc) (local, MIT) | Clean Markdown in milliseconds. For slides, `--- slide N ---` markers are rebuilt from the slide titles. |
+| IPYNB, HTML, text | built-in | |
+
+- Everything runs locally. anydoc's hosted OCR is never turned on.
+- **Visual pages:** pages with no text layer (scans), or with charts or diagrams (solid vector shapes, plotted curves or large images), are listed in `visual_pages`. Bordered tables are not flagged.
+- **`view_page`** renders PDFs with PyMuPDF. Slides and office files go through LibreOffice when it is installed; without it, `view_page` returns the pictures embedded in that slide.
+- **Speed:** a 60-page PDF takes about 0.7 s. pymupdf4llm's GNN layout engine is about 12× slower, and `CANVAS_MCP_PDF_LAYOUT=1` turns it on. Downloaded files and extractions are cached in memory (last 4 files), so paging and `view_page` don't download again.
+- **stdout safety:** pymupdf4llm prints to stdout at the C level, which corrupts the MCP stdio channel. `serve` moves fd 1 to stderr and gives the protocol its own descriptor (`stdio_guard.py`).
+- **License:** PyMuPDF is AGPL-3.0. That is fine for personal use. Swap it out before redistributing this as a closed product.
 
 ## Security model: how credentials are kept from leaking
 
@@ -90,7 +109,7 @@ Residual risks you should know about:
 
 ## Config (env vars)
 
-`CANVAS_BASE_URL` (default `https://canvas.ust.hk`), `CANVAS_MCP_HOME` (default `~/.canvas-mcp`), `CANVAS_MCP_DOWNLOAD_DIR`, `CANVAS_MCP_MAX_TEXT_CHARS` (60000), `CANVAS_MCP_MAX_DOWNLOAD_MB` (100), `CANVAS_MCP_NO_KEYRING=1` (use the key-file fallback).
+`CANVAS_BASE_URL` (default `https://canvas.ust.hk`), `CANVAS_MCP_HOME` (default `~/.canvas-mcp`), `CANVAS_MCP_DOWNLOAD_DIR`, `CANVAS_MCP_MAX_TEXT_CHARS` (60000), `CANVAS_MCP_MAX_DOWNLOAD_MB` (100), `CANVAS_MCP_NO_KEYRING=1` (use the key-file fallback), `CANVAS_MCP_PDF_LAYOUT=1` (slower GNN PDF layout), `CANVAS_MCP_SOFFICE` (path to LibreOffice).
 
 ## Tests
 
@@ -102,7 +121,15 @@ xvfb-run -a pytest -q        # headful login tests need a display; without one t
 What the tests cover:
 
 - **Mock Canvas API** (httpx): pagination, credentials stripped on off-host redirects, expiry detection, encryption and file permissions, redaction, end-to-end MCP tool calls, and the check that no tool takes credentials.
-- **Extraction**: generated PDF, PPTX (titles, body, tables, speaker notes), IPYNB, Canvas-style HTML, and `read_file` paging that reassembles the text exactly.
+- **Extraction**:
+  - The table-row regression is checked on a real Chromium-printed lecture PDF.
+  - Scanned, chart and line-plot pages are flagged; bordered tables are not.
+  - PPTX via anydoc keeps slide markers, tables and notes, handles untitled slides, and falls back to python-pptx.
+  - DOCX and CSV go through anydoc.
+  - A 60-page PDF finishes in under 5 s.
+  - `read_file` paging reassembles the text exactly, and each file is downloaded only once.
+- **`view_page`**: PDF image size bounds, slide rendering through LibreOffice, the embedded-picture fallback, and out-of-range pages.
+- **stdio guard**: a real subprocess shows that C-level and `print()` noise go to stderr while the protocol bytes stay clean.
 - **Real Playwright login against a fake Canvas → CAS → Microsoft chain** (two hostnames, so cookie scoping is real):
   - Default mode keeps only the Canvas cookies, and they then authenticate the API.
   - Microsoft cookies are dropped.

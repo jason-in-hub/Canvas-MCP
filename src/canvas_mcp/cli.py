@@ -75,6 +75,9 @@ def _logout(_args) -> int:
 
 def _serve(_args) -> int:
     from .server import build_server
+    from .stdio_guard import isolate_stdout
+
+    isolate_stdout()  # stdout is the JSON-RPC channel; keep library chatter off it
 
     build_server().run()
     return 0

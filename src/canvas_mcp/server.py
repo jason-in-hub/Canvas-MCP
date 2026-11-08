@@ -12,23 +12,26 @@ Security model:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
 from .client import AuthRequired, CanvasClient, CanvasError, Session
 from .config import Settings, load_settings
-from .extract import extract_text, html_to_text
+from .extract import Extracted, extract, html_to_text, kind_of
+from .render import RenderError, office_to_pdf, pptx_slide_pictures, render_pdf_page, soffice_path
 from .redact import scrub_text, scrub_url
 from .store import SecretStore, _ensure_private_dir
 
 log = logging.getLogger(__name__)
 
 try:  # mcp >= 2.0
-    from mcp.server.mcpserver import MCPServer as _Server
+    from mcp.server.mcpserver import Image, MCPServer as _Server
 except ImportError:  # mcp 1.x
-    from mcp.server.fastmcp import FastMCP as _Server  # type: ignore
+    from mcp.server.fastmcp import FastMCP as _Server, Image  # type: ignore
 
 LOGIN_HINT = (
     "Not logged in to Canvas (or the session expired). Ask the user to run "
@@ -40,16 +43,28 @@ LOGIN_HINT = (
 INSTRUCTIONS = (
     "Read-only access to the user's HKUST Canvas: courses, modules, files (lecture notes), "
     "pages, announcements, assignments, discussions, calendar. Typical flow: list_courses -> "
-    "list_modules / list_files -> read_file. Never request credentials in chat; use "
+    "list_modules / list_files -> read_file. read_file returns Markdown plus `visual_pages` "
+    "(scanned or diagram-heavy pages): call view_page on those, or whenever a formula, chart "
+    "or figure matters, to see the actual page image. Never request credentials in chat; use "
     "open_login_window if auth is needed."
 )
 
 
 class Ctx:
+    CACHE_FILES = 4
+
     def __init__(self, settings: Settings, store: SecretStore, client: CanvasClient | None = None):
         self.settings = settings
         self.store = store
         self._client = client
+        # file_id -> {"updated_at", "meta", "data", "ctype", "extracted", "pdf"}; small, in-memory only
+        self.files: OrderedDict[str, dict] = OrderedDict()
+
+    def cache_put(self, file_id: str, entry: dict) -> None:
+        self.files[file_id] = entry
+        self.files.move_to_end(file_id)
+        while len(self.files) > self.CACHE_FILES:
+            self.files.popitem(last=False)
 
     def client(self) -> CanvasClient:
         if self._client is None:
@@ -63,6 +78,7 @@ class Ctx:
         if self._client is not None:
             await self._client.aclose()
         self._client = None
+        self.files.clear()
 
 
 # ---------------------------------------------------------------- helpers
@@ -199,36 +215,103 @@ def build_server(ctx: Ctx | None = None) -> Any:
                      "folder": folders.get(f.get("folder_id"))} for f in files]
         return await guarded(run)
 
-    async def _fetch_file(file_id: str) -> tuple[dict, bytes, str]:
+    async def _fetch_file(file_id: str) -> dict:
+        """Metadata is always re-fetched (cheap, and enforces locks); bytes are cached by updated_at."""
         meta = await ctx.client().get(f"/api/v1/files/{file_id}")
         if meta.get("locked_for_user"):
             raise CanvasError(f"File is locked: {meta.get('lock_explanation') or 'not yet available'}")
+        cached = ctx.files.get(str(file_id))
+        if cached and cached["updated_at"] == meta.get("updated_at"):
+            ctx.files.move_to_end(str(file_id))
+            cached["meta"] = meta
+            return cached
         if (meta.get("size") or 0) > ctx.settings.max_download_bytes:
             raise CanvasError("File too large for the configured download cap.")
         data, ctype = await ctx.client().stream_download(meta["url"], ctx.settings.max_download_bytes)
-        return meta, data, meta.get("content-type") or ctype
+        entry = {"updated_at": meta.get("updated_at"), "meta": meta, "data": data,
+                 "ctype": meta.get("content-type") or ctype, "extracted": None, "pdf": None}
+        ctx.cache_put(str(file_id), entry)
+        return entry
+
+    def _name(meta: dict) -> str:
+        return meta.get("display_name") or meta.get("filename") or ""
 
     @mcp.tool()
     async def read_file(file_id: str, offset: int = 0, max_chars: int = 0) -> dict:
-        """Download a course file and return its text (PDF, PPTX, DOCX, IPYNB, HTML, plain text).
-        Use offset/max_chars to page through long documents."""
+        """Download a course file and return it as Markdown. PDFs and slides are split by
+        `--- page N ---` / `--- slide N ---`. Formats: PDF, PPT/PPTX, DOC/DOCX, XLS/XLSX,
+        ODF, RTF, EPUB, CSV, IPYNB, HTML, text. `visual_pages` lists pages whose content is
+        mainly visual (scans, charts, diagrams): use view_page for those. Page through long
+        documents with offset/max_chars."""
         async def run():
-            meta, data, ctype = await _fetch_file(file_id)
-            text = extract_text(meta.get("display_name") or meta.get("filename", ""), ctype, data)
-            base = _pick(meta, "id", "display_name", "content-type", "size", "updated_at")
-            if text is None:
-                return {**base, "text": None, "note": "Unsupported format for text extraction; use download_file to save it locally."}
+            entry = await _fetch_file(file_id)
+            meta = entry["meta"]
+            if entry["extracted"] is None:
+                entry["extracted"] = await asyncio.to_thread(extract, _name(meta), entry["ctype"], entry["data"])
+            ex: Extracted = entry["extracted"]
+            base = {**_pick(meta, "id", "display_name", "content-type", "size", "updated_at"),
+                    "kind": ex.kind, "engine": ex.engine}
+            if ex.page_count:
+                base["page_count"] = ex.page_count
+            if ex.visual_pages:
+                base["visual_pages"] = ex.visual_pages
+                base["hint"] = "Call view_page(file_id, page) for the pages in visual_pages before relying on their text."
+            if ex.note:
+                base["note"] = ex.note
+            if ex.text is None:
+                return {**base, "text": None,
+                        "note": ex.note or "Unsupported format for text extraction; use download_file to save it locally."}
+            text = ex.text
             limit = max_chars or ctx.settings.max_text_chars
             chunk = text[offset: offset + limit]
             return {**base, "total_chars": len(text), "offset": offset, "text": chunk,
                     "has_more": offset + limit < len(text)}
         return await guarded(run)
 
+    @mcp.tool(structured_output=False)  # returns image content, not JSON
+    async def view_page(file_id: str, page: int = 1):
+        """Return an image of one page (PDF) or slide (PPT/PPTX, also DOCX etc.) so you can SEE
+        diagrams, charts, handwriting, scanned notes and typeset formulas. Costs ~1.5k tokens
+        per image, so use it on pages that matter (e.g. those in read_file's visual_pages)."""
+        async def run():
+            entry = await _fetch_file(file_id)
+            meta, name = entry["meta"], _name(entry["meta"])
+            kind = kind_of(name, entry["ctype"])
+            note = None
+            if kind == "pdf":
+                r = await asyncio.to_thread(render_pdf_page, entry["data"], page)
+            elif kind in ("slides", "office"):
+                if entry["pdf"] is None and soffice_path():
+                    entry["pdf"] = await asyncio.to_thread(office_to_pdf, entry["data"], name)
+                if entry["pdf"] is not None:
+                    r = await asyncio.to_thread(render_pdf_page, entry["pdf"], page)
+                elif name.lower().endswith((".pptx", ".pptm", ".ppsx")):
+                    r = await asyncio.to_thread(pptx_slide_pictures, entry["data"], page)
+                else:
+                    return {"error": "cannot_render", "detail": "Install LibreOffice to render this format."}
+            else:
+                return {"error": "cannot_render", "detail": f"view_page supports PDF and office files, not {kind}."}
+            note = r.note
+            label = "slide" if kind == "slides" else "page"
+            header = f"{meta.get('display_name')}: {label} {page} of {r.page_count}" + (f". {note}" if note else "")
+            if not r.images:
+                return {"error": "no_image", "detail": header}
+            return [header, *[Image(data=d, format=fmt) for d, fmt in r.images]]
+
+        try:
+            return await run()
+        except AuthRequired as exc:
+            await ctx.reset()
+            return {"error": "auth_required", "detail": str(exc), "hint": LOGIN_HINT}
+        except (CanvasError, RenderError) as exc:
+            return {"error": "cannot_render" if isinstance(exc, RenderError) else "canvas_error", "detail": scrub_text(str(exc))}
+
     @mcp.tool()
     async def download_file(file_id: str) -> dict:
         """Save a course file to the local download folder (~/.canvas-mcp/downloads/<course>/)."""
         async def run():
-            meta, data, _ = await _fetch_file(file_id)
+            entry = await _fetch_file(file_id)
+            meta, data = entry["meta"], entry["data"]
             name = _SAFE_NAME.sub("_", meta.get("display_name") or f"file_{file_id}").strip(" .") or f"file_{file_id}"
             ctx_folder = _SAFE_NAME.sub("_", str(meta.get("folder_id") or "misc"))
             dest_dir: Path = ctx.settings.download_dir / ctx_folder

@@ -88,9 +88,9 @@ def main(argv: list[str] | None = None) -> None:
     lg = sub.add_parser("login", help="Sign in via HKUST Microsoft SSO and store an encrypted session")
     mode = lg.add_mutually_exclusive_group()
     mode.add_argument("--headless", action="store_true", help="No browser window: prompt for credentials in this terminal (hidden input)")
-    mode.add_argument("--token", action="store_true", help="Paste an existing Canvas access token instead")
+    mode.add_argument("--token", action="store_true", help="Paste an existing Canvas access token instead (HKUST disables self-issued tokens; admin-issued only)")
     lg.add_argument("--mint-token", type=int, metavar="DAYS", default=None,
-                    help="After SSO, have Canvas issue a personal access token valid for DAYS (if HKUST permits)")
+                    help="After SSO, have Canvas issue a personal access token valid for DAYS (disabled on HKUST; falls back to session cookies)")
     lg.set_defaults(func=_login)
     sub.add_parser("status", help="Check the stored session").set_defaults(func=_status)
     sub.add_parser("logout", help="Delete the stored session and key").set_defaults(func=_logout)

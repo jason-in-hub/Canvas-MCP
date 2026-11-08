@@ -30,11 +30,13 @@ playwright install chromium
 ```bash
 canvas-mcp login                 # opens a real browser at Microsoft's sign-in page (recommended)
 canvas-mcp login --headless      # no display: hidden terminal prompt + Authenticator number shown
-canvas-mcp login --token         # paste a Canvas access token (Account → Settings → New Access Token)
-canvas-mcp login --mint-token 30 # after SSO, ask Canvas for a 30-day token (if HKUST allows it)
+canvas-mcp login --token         # paste a Canvas access token (*)
+canvas-mcp login --mint-token 30 # after SSO, ask Canvas for a 30-day token (*)
 canvas-mcp status
 canvas-mcp logout
 ```
+
+(*) **HKUST has disabled user-generated access tokens** (confirmed 2026-11: "Your Canvas administrators have chosen to limit your ability to generate your own access token"). On HKUST use the default browser login or `--headless`; the token modes remain for other Canvas instances or an admin-issued token.
 
 Use your full email (`abc@connect.ust.hk`), as [HKUST SSO](https://itso.hkust.edu.hk/node/1199) requires. Browser sessions usually last hours to days. When one expires, tools return `auth_required` and you log in again.
 

@@ -20,9 +20,9 @@ Once those cookies exist, Canvas's own web UI calls `/api/v1/*` with them. This 
 
 ```bash
 git clone <this repo> && cd Canvas-MCP
-python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install -e .
-playwright install chromium
+# needs uv: https://docs.astral.sh/uv/  (curl -LsSf https://astral.sh/uv/install.sh | sh)
+uv sync                              # creates .venv from uv.lock (project + dev deps)
+uv run playwright install chromium
 # optional, for whole-slide images in view_page:
 #   macOS: brew install --cask libreoffice   Windows: winget install TheDocumentFoundation.LibreOffice
 ```
@@ -30,12 +30,13 @@ playwright install chromium
 ## Log in (in a terminal, not in the chat)
 
 ```bash
-canvas-mcp login                 # opens a real browser at Microsoft's sign-in page (recommended)
-canvas-mcp login --headless      # no display: hidden terminal prompt + Authenticator number shown
-canvas-mcp login --token         # paste a Canvas access token (*)
-canvas-mcp login --mint-token 30 # after SSO, ask Canvas for a 30-day token (*)
-canvas-mcp status
-canvas-mcp logout
+# inside the repo; or activate .venv and drop `uv run`
+uv run canvas-mcp login                 # opens a real browser at Microsoft's sign-in page (recommended)
+uv run canvas-mcp login --headless      # no display: hidden terminal prompt + Authenticator number shown
+uv run canvas-mcp login --token         # paste a Canvas access token (*)
+uv run canvas-mcp login --mint-token 30 # after SSO, ask Canvas for a 30-day token (*)
+uv run canvas-mcp status
+uv run canvas-mcp logout
 ```
 
 (*) **HKUST has disabled user-generated access tokens** (confirmed 2026-11: "Your Canvas administrators have chosen to limit your ability to generate your own access token"). On HKUST use the default browser login or `--headless`; the token modes remain for other Canvas instances or an admin-issued token.
@@ -49,12 +50,14 @@ Use your full email (`abc@connect.ust.hk`), as [HKUST SSO](https://itso.hkust.ed
 ```json
 {
   "mcpServers": {
-    "hkust-canvas": { "command": "/ABS/PATH/Canvas-MCP/.venv/bin/canvas-mcp", "args": ["serve"] }
+    "hkust-canvas": { "command": "uv", "args": ["--directory", "/ABS/PATH/Canvas-MCP", "run", "canvas-mcp", "serve"] }
   }
 }
 ```
 
-Claude Code: `claude mcp add hkust-canvas -- /ABS/PATH/.venv/bin/canvas-mcp serve`
+Claude Code: `claude mcp add hkust-canvas -- uv --directory /ABS/PATH/Canvas-MCP run canvas-mcp serve`
+
+(Claude Desktop may not inherit your shell `PATH`; if `uv` isn't found, use its absolute path from `which uv`.)
 
 ## Tools
 
@@ -114,8 +117,8 @@ Residual risks you should know about:
 ## Tests
 
 ```bash
-pip install -e '.[dev]' && playwright install chromium
-xvfb-run -a pytest -q        # headful login tests need a display; without one they skip
+uv sync && uv run playwright install chromium
+xvfb-run -a uv run pytest -q        # headful login tests need a display; without one they skip
 ```
 
 What the tests cover:

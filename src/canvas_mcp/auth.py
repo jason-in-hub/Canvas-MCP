@@ -1,8 +1,10 @@
 """Login flows for HKUST Canvas (Microsoft Entra ID SSO).
 
-How HKUST Canvas auth works (observed flow):
+How HKUST Canvas auth works (observed 2026-11-08):
     canvas.ust.hk/login
-      -> 302 to login.microsoftonline.com (HKUST tenant, SAML/OIDC)
+      -> 302 canvas.ust.hk/login/cas
+      -> 302 cas.ust.hk/cas/login?service=...   (HKUST CAS, fronted by Entra ID)
+      -> login.microsoftonline.com (HKUST tenant)
       -> username (xxx@connect.ust.hk) -> password -> MFA (Authenticator
          number match / OTP) -> "Stay signed in?"
       -> POST back to canvas.ust.hk -> Canvas sets `canvas_session`,

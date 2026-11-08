@@ -8,7 +8,9 @@ Canvas is open source and its REST API (`/api/v1/...`) is documented. The only p
 
 ```
 canvas.ust.hk/login
-  └─302→ login.microsoftonline.com   (HKUST Entra ID tenant: email → password → MFA → "Stay signed in?")
+  └─302→ canvas.ust.hk/login/cas
+  └─302→ cas.ust.hk/cas/login?service=…   (HKUST CAS, merged into Microsoft SSO since 2022)
+  └─→ login.microsoftonline.com   (HKUST Entra ID tenant: email → password → MFA → "Stay signed in?")
   └─POST→ canvas.ust.hk               sets canvas_session, _csrf_token, log_session_id cookies
 ```
 

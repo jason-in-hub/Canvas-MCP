@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 
 log = logging.getLogger(__name__)
+
+_BLOCK_TAGS = ["p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "table",
+               "section", "article", "pre", "blockquote", "hr", "header", "footer"]
 
 TEXT_TYPES = (".txt", ".md", ".csv", ".py", ".r", ".m", ".json", ".tex", ".ipynb", ".sql", ".java", ".c", ".cpp", ".js", ".ts")
 
@@ -16,8 +20,6 @@ def html_to_text(html: str | None) -> str:
     try:
         from bs4 import BeautifulSoup
     except ImportError:  # pragma: no cover
-        import re
-
         return re.sub(r"<[^>]+>", " ", html)
     soup = BeautifulSoup(html, "html.parser")
     for tag in soup(["script", "style"]):
@@ -26,8 +28,18 @@ def html_to_text(html: str | None) -> str:
         href = a.get("href")
         if href and a.get_text(strip=True):
             a.replace_with(f"{a.get_text(strip=True)} [{href}]")
-    text = soup.get_text("\n")
-    lines = [ln.strip() for ln in text.splitlines()]
+    # Break lines only at block boundaries so inline <a>/<b>/<span> keep sentences intact.
+    for br in soup.find_all("br"):
+        br.replace_with("\n")
+    for li in soup.find_all("li"):
+        li.insert(0, "- ")
+    for td in soup.find_all(["td", "th"]):
+        td.append(" | ")
+    for blk in soup.find_all(_BLOCK_TAGS):
+        blk.insert_before("\n")
+        blk.insert_after("\n")
+    text = soup.get_text("")
+    lines = [re.sub(r"[ \t\xa0]+", " ", ln).strip().rstrip("|").strip() for ln in text.splitlines()]
     return "\n".join(ln for ln in lines if ln)
 
 

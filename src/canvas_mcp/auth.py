@@ -54,6 +54,13 @@ log = logging.getLogger(__name__)
 
 MS_LOGIN_HOSTS = ("login.microsoftonline.com", "login.microsoft.com", "login.live.com")
 LOGIN_TIMEOUT_S = 300
+MS_REDIRECT_TIMEOUT_MS = 60_000
+
+
+def _is_trusted_idp(url: str) -> bool:
+    """Only ever type credentials into Microsoft's own login hosts over HTTPS."""
+    p = urlparse(url)
+    return p.scheme == "https" and (p.hostname or "") in MS_LOGIN_HOSTS
 
 
 def _eprint(*a: Any) -> None:
@@ -128,8 +135,7 @@ async def _ms_headless_followups(page, base_url: str, deadline: float) -> None:
     while time.time() < deadline:
         if urlparse(page.url).hostname == urlparse(base_url).hostname and await _logged_in(page, base_url):
             return
-        host = urlparse(page.url).hostname or ""
-        if host in MS_LOGIN_HOSTS:
+        if _is_trusted_idp(page.url):
             if await page.locator("#passwordError").count():
                 raise RuntimeError("Microsoft rejected the password.")
             num = page.locator("#idRichContext_DisplaySign")
@@ -173,9 +179,15 @@ async def browser_login(settings: Settings, *, headless: bool = False, mint_toke
             deadline = time.time() + LOGIN_TIMEOUT_S
             if headless:
                 try:
-                    await page.wait_for_url(lambda u: (urlparse(u).hostname or "") in MS_LOGIN_HOSTS, timeout=60_000)
-                    # Phishing guard: only ever type the password into Microsoft's own host.
-                    if (urlparse(page.url).hostname or "") not in MS_LOGIN_HOSTS or urlparse(page.url).scheme != "https":
+                    try:
+                        await page.wait_for_url(lambda u: _is_trusted_idp(str(u)), timeout=MS_REDIRECT_TIMEOUT_MS)
+                    except Exception as exc:
+                        raise RuntimeError(
+                            f"Login did not reach a Microsoft sign-in page (stuck at {urlparse(page.url).hostname}); "
+                            "refusing to enter credentials."
+                        ) from exc
+                    # Phishing guard (re-checked after the wait): only type into Microsoft's own host.
+                    if not _is_trusted_idp(page.url):
                         raise RuntimeError(f"Unexpected login host {urlparse(page.url).hostname}; refusing to enter credentials.")
                     await _ms_headless_drive(page, username, password)
                 finally:
